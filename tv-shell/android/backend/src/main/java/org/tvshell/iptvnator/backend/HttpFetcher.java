@@ -1,9 +1,11 @@
 package org.tvshell.iptvnator.backend;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.net.ConnectException;
 import java.net.HttpURLConnection;
 import java.net.MalformedURLException;
@@ -60,16 +62,21 @@ public class HttpFetcher {
         }
     }
 
+    /** Bodies above this are streamed by {@link #getLargeJson}; a field so tests need not send 64 MB. */
+    long spillBytes = MAX_BODY_BYTES;
+
     private static final class EncodedBody extends FilterInputStream {
         private final long declared;
+        private final long limit;
         private final byte[] singleByte = new byte[1];
         private long count;
         private boolean eof;
         private IOException failure;
 
-        EncodedBody(InputStream in, long declared) {
+        EncodedBody(InputStream in, long declared, long limit) {
             super(in);
             this.declared = declared;
+            this.limit = limit;
         }
 
         @Override
@@ -83,7 +90,7 @@ public class HttpFetcher {
                 int read = super.read(buffer, offset, length);
                 if (read == -1) eof = true;
                 else count += read;
-                if (count > MAX_BODY_BYTES) throw new TooLargeException();
+                if (count > limit) throw new TooLargeException();
                 return read;
             } catch (IOException e) {
                 failure = e;
@@ -109,11 +116,47 @@ public class HttpFetcher {
         public final int status;
         public final String body;
         public final String contentType;
+        /** Set instead of {@link #body} when {@link #getLargeJson} streams: the caller must close it. */
+        public final InputStream stream;
 
         Result(int status, String body, String contentType) {
+            this(status, body, contentType, null);
+        }
+
+        Result(int status, String body, String contentType, InputStream stream) {
             this.status = status;
             this.body = body;
             this.contentType = contentType;
+            this.stream = stream;
+        }
+    }
+
+    /** The bytes read so far of a body that may outgrow memory; the rest can follow from the wire. */
+    static final class HeadBuffer extends ByteArrayOutputStream {
+        HeadBuffer() {
+            super(64 * 1024);
+        }
+
+        /** Reads to EOF (true), or stops once more than {@code limit} bytes are buffered (false). */
+        boolean fill(InputStream in, long limit) throws IOException {
+            byte[] chunk = new byte[16 * 1024];
+            int read;
+            while ((read = in.read(chunk)) != -1) {
+                write(chunk, 0, read);
+                if (count > limit) return false;
+            }
+            return true;
+        }
+
+        /**
+         * The buffered head then {@code rest}, skipping a UTF-8 BOM and leading whitespace as axios
+         * does; null when the body is not a JSON object or array (those are never streamed).
+         */
+        InputStream jsonThen(InputStream rest) {
+            int start = count >= 3 && (buf[0] & 0xff) == 0xEF && (buf[1] & 0xff) == 0xBB && (buf[2] & 0xff) == 0xBF ? 3 : 0;
+            while (start < count && (buf[start] == ' ' || buf[start] == '\t' || buf[start] == '\n' || buf[start] == '\r')) start++;
+            if (start == count || (buf[start] != '[' && buf[start] != '{')) return null;
+            return new SequenceInputStream(new ByteArrayInputStream(buf, start, count - start), rest);
         }
     }
 
@@ -145,9 +188,22 @@ public class HttpFetcher {
     }
 
     public Result get(String url, Map<String, String> headers, int timeoutMs) throws ProviderException {
+        return fetchTracked(url, headers, timeoutMs, false);
+    }
+
+    /**
+     * Like {@link #get}, but a UTF-8 JSON object or array above {@link #spillBytes} comes back as
+     * {@link Result#stream} (the head already read, then the rest still on the wire) instead of
+     * failing as too large: an Xtream VOD or series catalogue can be several times the in-memory cap.
+     */
+    public Result getLargeJson(String url, Map<String, String> headers, int timeoutMs) throws ProviderException {
+        return fetchTracked(url, headers, timeoutMs, true);
+    }
+
+    private Result fetchTracked(String url, Map<String, String> headers, int timeoutMs, boolean largeJson) throws ProviderException {
         RequestProgress progress = new RequestProgress();
         try {
-            return fetch(url, headers, timeoutMs, progress);
+            return fetch(url, headers, timeoutMs, progress, largeJson);
         } catch (ProviderException failure) {
             failure.initialResponded |= progress.initialResponded;
             throw failure;
@@ -158,7 +214,21 @@ public class HttpFetcher {
         return get(url, headers, timeoutMs);
     }
 
-    private Result fetch(String url, Map<String, String> headers, int timeoutMs, RequestProgress progress) throws ProviderException {
+    /** Closing the body also releases its connection. */
+    private static InputStream closingConnection(InputStream body, final HttpURLConnection connection) {
+        return new FilterInputStream(body) {
+            @Override
+            public void close() throws IOException {
+                try {
+                    super.close();
+                } finally {
+                    connection.disconnect();
+                }
+            }
+        };
+    }
+
+    private Result fetch(String url, Map<String, String> headers, int timeoutMs, RequestProgress progress, boolean largeJson) throws ProviderException {
         Set<String> visited = new HashSet<String>();
         String current = url;
         for (int redirects = 0; ; redirects++) {
@@ -176,6 +246,7 @@ public class HttpFetcher {
             } catch (IOException e) {
                 throw mapNetworkError(e);
             }
+            InputStream streamed = null;
             try {
                 connection.setInstanceFollowRedirects(false);
                 connection.setConnectTimeout(timeoutMs);
@@ -231,7 +302,7 @@ public class HttpFetcher {
                 String contentType = connection.getContentType();
                 // Declared size first: an oversized answer is refused before a byte of it is read.
                 long declared = connection.getContentLengthLong();
-                if (declared > MAX_BODY_BYTES) throw tooLarge();
+                if (declared > MAX_BODY_BYTES && !largeJson) throw tooLarge();
                 InputStream in;
                 try {
                     in = connection.getInputStream();
@@ -243,9 +314,23 @@ public class HttpFetcher {
                 boolean gzip = encoding.contains("gzip");
                 boolean compressed = gzip || encoding.contains("deflate");
                 try {
-                    EncodedBody wire = compressed ? new EncodedBody(in, declared) : null;
+                    EncodedBody wire = compressed ? new EncodedBody(in, declared, largeJson ? Long.MAX_VALUE : MAX_BODY_BYTES) : null;
                     if (wire != null) in = gzip ? new GZIPInputStream(wire) : new InflaterInputStream(wire);
-                    byte[] body = readAll(in, compressed ? -1 : declared, MAX_BODY_BYTES);
+                    byte[] body;
+                    if (largeJson) {
+                        HeadBuffer head = new HeadBuffer();
+                        if (!head.fill(in, spillBytes)) {
+                            // shortcut: streamed bytes pass through unconverted, so only UTF-8 streams; other charsets stay refused.
+                            InputStream json = UTF8.equals(charsetOf(contentType)) ? head.jsonThen(in) : null;
+                            if (json == null) throw tooLarge();
+                            streamed = closingConnection(json, connection);
+                            return new Result(status, null, contentType, streamed);
+                        }
+                        body = head.toByteArray();
+                        if (!compressed && declared >= 0 && body.length != declared) throw new IOException("Incomplete provider response");
+                    } else {
+                        body = readAll(in, compressed ? -1 : declared, MAX_BODY_BYTES);
+                    }
                     if (wire != null) wire.requireComplete();
                     return new Result(status, new String(body, charsetOf(contentType)), contentType);
                 } catch (TooLargeException e) {
@@ -254,14 +339,17 @@ public class HttpFetcher {
                     // Receiving headers is not a successful request when the body cannot be read.
                     throw mapNetworkError(e);
                 } finally {
-                    try {
-                        in.close();
-                    } catch (IOException ignored) {
-                        // ignore
+                    // A streamed body owns the stream and the connection until its reader closes it.
+                    if (streamed == null) {
+                        try {
+                            in.close();
+                        } catch (IOException ignored) {
+                            // ignore
+                        }
                     }
                 }
             } finally {
-                connection.disconnect();
+                if (streamed == null) connection.disconnect();
             }
         }
     }

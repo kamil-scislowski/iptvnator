@@ -183,7 +183,10 @@ public final class TvShellServer extends NanoHTTPD {
                 WebBackend.Response r = backend.handle(method.name(), sub, query, body);
                 // Streamed from the chunks the answer was encoded into: a /parse record of tens of
                 // MB is never copied into one array.
-                Response response = newFixedLengthResponse(status(r.status), r.contentType, r.openBody(), r.bodyLength());
+                // A large Xtream catalogue is piped from the provider (unknown length): sent chunked.
+                Response response = r.bodyLength() < 0
+                    ? newChunkedResponse(status(r.status), r.contentType, r.openBody())
+                    : newFixedLengthResponse(status(r.status), r.contentType, r.openBody(), r.bodyLength());
                 for (Map.Entry<String, String> header : r.headers.entrySet()) response.addHeader(header.getKey(), header.getValue());
                 return response;
             }

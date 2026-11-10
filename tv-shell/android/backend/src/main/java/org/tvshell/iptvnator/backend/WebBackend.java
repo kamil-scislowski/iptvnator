@@ -1,9 +1,14 @@
 package org.tvshell.iptvnator.backend;
 
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.SequenceInputStream;
 import java.nio.charset.Charset;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -42,31 +47,47 @@ public class WebBackend {
         public final String contentType;
         public final Map<String, String> headers = new LinkedHashMap<String, String>();
         private final Utf8Sink body;
+        /** A body piped from the provider instead of {@link #body}: unknown length, readable once. */
+        private final InputStream stream;
 
         public Response(int status, String contentType, byte[] body) {
             this(status, contentType, Utf8Sink.of(body));
         }
 
         Response(int status, String contentType, Utf8Sink body) {
+            this(status, contentType, body, null);
+        }
+
+        Response(int status, String contentType, InputStream stream) {
+            this(status, contentType, null, stream);
+        }
+
+        private Response(int status, String contentType, Utf8Sink body, InputStream stream) {
             this.status = status;
             this.contentType = contentType;
             this.body = body;
+            this.stream = stream;
             headers.put("Cache-Control", "no-store");
         }
 
-        /** The body size in bytes (the Content-Length). */
+        /** The body size in bytes (the Content-Length), or -1 for a streamed body (sent chunked). */
         public long bodyLength() {
-            return body.length();
+            return stream != null ? -1 : body.length();
         }
 
-        /** The body, read from its chunks in place; a new stream per call. */
+        /** The body, read from its chunks in place; a new stream per call (the one stream when streamed). */
         public InputStream openBody() {
-            return body.openStream();
+            return stream != null ? stream : body.openStream();
         }
 
-        /** The body as one array (a copy): for tests and small answers. */
+        /** The body as one array (a copy; consumes a streamed body): for tests and small answers. */
         public byte[] bodyBytes() {
-            return body.toByteArray();
+            if (stream == null) return body.toByteArray();
+            try (InputStream in = stream) {
+                return HttpFetcher.readAll(in, -1, Long.MAX_VALUE);
+            } catch (IOException e) {
+                throw new IllegalStateException(e);
+            }
         }
 
         public String bodyText() {
@@ -210,7 +231,8 @@ public class WebBackend {
             String requestUrl = PortalUrls.withQuery(PortalUrls.xtreamApiUrl(base), params);
             HttpFetcher.Result result = connectionTest
                 ? fetcher.testConnection(requestUrl, headers, TIMEOUT_XTREAM_MS)
-                : fetcher.get(requestUrl, headers, TIMEOUT_XTREAM_MS);
+                : fetcher.getLargeJson(requestUrl, headers, TIMEOUT_XTREAM_MS);
+            if (result.stream != null) return streamedPayload(action, result.stream);
             Map<String, Object> out = Json.object();
             out.put("action", action);
             out.put("payload", payloadOf(result.body));
@@ -368,6 +390,16 @@ public class WebBackend {
         body.put("message", message);
         body.put("status", Integer.valueOf(status));
         return body;
+    }
+
+    /**
+     * The {@code {action, payload}} answer around a provider JSON body piped from the wire: never held
+     * in memory and not validated here (a truncated or invalid body fails the page's JSON parse).
+     */
+    static Response streamedPayload(String action, InputStream payload) {
+        byte[] head = ("{\"action\":" + Json.write(action) + ",\"payload\":").getBytes(UTF8);
+        return new Response(200, JSON_TYPE, new SequenceInputStream(Collections.enumeration(Arrays.asList(
+            new ByteArrayInputStream(head), payload, new ByteArrayInputStream(new byte[] {'}'})))));
     }
 
     /** Serialised straight to UTF-8 chunks: not a char buffer plus a String plus bytes, nor a doubling array. */

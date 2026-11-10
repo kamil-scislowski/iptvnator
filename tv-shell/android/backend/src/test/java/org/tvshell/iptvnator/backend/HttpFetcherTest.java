@@ -161,4 +161,94 @@ public class HttpFetcherTest {
         }
     }
 
+    /** Serves one synthetic answer with the given body, gzip-compressed when asked. */
+    private static final class OneShotServer implements AutoCloseable {
+        final ServerSocket listener;
+        final Thread thread;
+        volatile IOException failure;
+
+        OneShotServer(byte[] body, final boolean gzip, final String contentType) throws IOException {
+            final byte[] wire = gzip ? BrokenBodyServer.gzip(body) : body;
+            listener = new ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"));
+            thread = new Thread(() -> {
+                try (Socket socket = listener.accept()) {
+                    socket.setSoTimeout(2000);
+                    BufferedReader request = new BufferedReader(new InputStreamReader(socket.getInputStream(), "US-ASCII"));
+                    String line;
+                    while ((line = request.readLine()) != null && !line.isEmpty()) { /* consume headers */ }
+                    String headers = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Type: " + contentType
+                        + "\r\nContent-Length: " + wire.length + (gzip ? "\r\nContent-Encoding: gzip" : "") + "\r\n\r\n";
+                    socket.getOutputStream().write(headers.getBytes("US-ASCII"));
+                    socket.getOutputStream().write(wire);
+                    socket.getOutputStream().flush();
+                } catch (IOException e) {
+                    failure = e;
+                }
+            }, "synthetic-catalogue");
+            thread.start();
+        }
+
+        String url() { return "http://127.0.0.1:" + listener.getLocalPort(); }
+
+        @Override
+        public void close() throws Exception {
+            listener.close();
+            thread.join(3000);
+            assertTrue("server thread finished", !thread.isAlive());
+            if (failure != null) throw failure;
+        }
+    }
+
+    private static byte[] catalogue(String prefix, int items) {
+        StringBuilder json = new StringBuilder(prefix).append('[');
+        for (int i = 0; i < items; i++) {
+            if (i > 0) json.append(',');
+            json.append("{\"stream_id\":").append(i).append(",\"name\":\"Synthetic Movie ").append(i).append(" é\"}");
+        }
+        return json.append(']').toString().getBytes(java.nio.charset.StandardCharsets.UTF_8);
+    }
+
+    private static WebBackend.Response vodStreams(OneShotServer server) {
+        HttpFetcher fetcher = new HttpFetcher();
+        fetcher.spillBytes = 1024;
+        WebBackend backend = new WebBackend(fetcher, "/api");
+        String id = WebBackendTest.register(backend, server.url());
+        return backend.handle("GET", "/xtream",
+            WebBackendTest.query("targetId", id, "username", "u", "password", "p", "action", "get_vod_streams"), null);
+    }
+
+    public void testXtreamCatalogueAboveTheCapIsStreamedNotRefused() throws Exception {
+        for (String variant : new String[] { "plain", "gzip", "bom" }) {
+            byte[] body = catalogue(variant.equals("bom") ? "﻿\n " : "", 200);
+            try (OneShotServer server = new OneShotServer(body, variant.equals("gzip"), "application/json")) {
+                WebBackend.Response r = vodStreams(server);
+                assertEquals(variant + ": sent chunked", Long.valueOf(-1), Long.valueOf(r.bodyLength()));
+                Map<String, Object> answer = WebBackendTest.body(r);
+                assertEquals(variant + ": action", "get_vod_streams", answer.get("action"));
+                java.util.List<?> payload = (java.util.List<?>) answer.get("payload");
+                assertEquals(variant + ": every item", Integer.valueOf(200), Integer.valueOf(payload.size()));
+                assertEquals(variant + ": multibyte text intact", "Synthetic Movie 199 é", ((Map<?, ?>) payload.get(199)).get("name"));
+            }
+        }
+    }
+
+    public void testSmallOrNonJsonXtreamAnswersKeepTheBufferedPath() throws Exception {
+        try (OneShotServer server = new OneShotServer(catalogue("", 2), false, "application/json")) {
+            WebBackend.Response r = vodStreams(server);
+            assertTrue("small answer keeps a Content-Length", r.bodyLength() >= 0);
+            assertEquals("small payload", Integer.valueOf(2), Integer.valueOf(((java.util.List<?>) WebBackendTest.body(r).get("payload")).size()));
+        }
+        byte[] text = new byte[4096];
+        java.util.Arrays.fill(text, (byte) 'x');
+        byte[] latin1 = catalogue("", 200);
+        String[][] refused = { { "text/plain", "text" }, { "application/json; charset=ISO-8859-1", "latin1" } };
+        for (String[] c : refused) {
+            try (OneShotServer server = new OneShotServer(c[1].equals("text") ? text : latin1, false, c[0])) {
+                WebBackend.Response r = vodStreams(server);
+                assertTrue(c[1] + ": not streamed", r.bodyLength() >= 0);
+                assertTrue(c[1] + ": still too large", String.valueOf(WebBackendTest.body(r).get("message")).contains("ERR_RESPONSE_TOO_LARGE"));
+            }
+        }
+    }
+
 }

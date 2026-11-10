@@ -20,6 +20,11 @@ public class WebBackendTest {
         ProviderException failure;
 
         @Override
+        public Result getLargeJson(String url, Map<String, String> requestHeaders, int timeoutMs) throws ProviderException {
+            return get(url, requestHeaders, timeoutMs);
+        }
+
+        @Override
         public Result get(String url, Map<String, String> requestHeaders, int timeoutMs) throws ProviderException {
             urls.add(url);
             headers.add(requestHeaders == null ? new LinkedHashMap<String, String>() : requestHeaders);
