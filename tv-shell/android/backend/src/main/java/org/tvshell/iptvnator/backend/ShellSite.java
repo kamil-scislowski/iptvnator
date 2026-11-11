@@ -162,22 +162,35 @@ public class ShellSite {
         + "let t=this.query().split(` OR `).map(s=>ni(s.trim())).filter(Boolean),"
         + "e=Ao(this.store.selectItemsFromSelectedCategory(),this.sortMode(),n=>n.title??n.name);"
         + "return t.length?e.filter(n=>{let m=ni(`${n.title??``} ${n.name??``}`);return t.some(s=>m.includes(s))}):e}))";
-    private static final String[][] SEARCH_PATCHES = {
-        {SEARCH_FILTER, SEARCH_FILTER_OR},
-        {LIVE_SEARCH_FILTER, LIVE_SEARCH_FILTER_OR},
+    /** ...whose result the channel list it renders (XtreamPortalChannelsList) filters again by the same search. */
+    static final String LIVE_LIST_FILTER = "this.filteredChannels=it$1(()=>{let t=ni(this.searchTermInput().trim()),"
+        + "e=this.sortedChannels();return t?e.filter(n=>ni(`${n.title??``} ${n.name??``}`).includes(t)):e})";
+    static final String LIVE_LIST_FILTER_OR = "this.filteredChannels=it$1(()=>{let t=this.searchTermInput().split(` OR `)"
+        + ".map(s=>ni(s.trim())).filter(Boolean),e=this.sortedChannels();return t.length?e.filter(n=>{"
+        + "let m=ni(`${n.title??``} ${n.name??``}`);return t.some(s=>m.includes(s))}):e})";
+    /** One group per view: its filters are replaced together or not at all (one left plain would match nothing). */
+    private static final String[][][] SEARCH_PATCHES = {
+        {{SEARCH_FILTER, SEARCH_FILTER_OR}},
+        {{LIVE_SEARCH_FILTER, LIVE_SEARCH_FILTER_OR}, {LIVE_LIST_FILTER, LIVE_LIST_FILTER_OR}},
     };
 
-    /** Each search found exactly once is replaced; a file with none (or an ambiguous one) is untouched. */
+    /** A group whose searches are each found exactly once is replaced; a file with none (or an ambiguous one) is untouched. */
     static byte[] patchSearch(byte[] js) {
         String text = new String(js, UTF8);
-        boolean changed = false;
-        for (String[] patch : SEARCH_PATCHES) {
-            int at = text.indexOf(patch[0]);
-            if (at < 0 || text.indexOf(patch[0], at + 1) >= 0) continue;
-            text = text.substring(0, at) + patch[1] + text.substring(at + patch[0].length());
-            changed = true;
+        String out = text;
+        for (String[][] group : SEARCH_PATCHES) {
+            String patched = out;
+            for (String[] patch : group) {
+                int at = patched.indexOf(patch[0]);
+                if (at < 0 || patched.indexOf(patch[0], at + 1) >= 0) {
+                    patched = null;
+                    break;
+                }
+                patched = patched.substring(0, at) + patch[1] + patched.substring(at + patch[0].length());
+            }
+            if (patched != null) out = patched;
         }
-        return changed ? text.getBytes(UTF8) : js;
+        return out == text ? js : out.getBytes(UTF8);
     }
 
     private static Resource text(int status, String message) {

@@ -109,10 +109,15 @@ public class ShellSiteTest {
         assertEquals("ambiguous: untouched", bundle + bundle, new String(site.serve("/main-TWICEAAA.js").body, UTF8));
         assertEquals("other files untouched", "console.log(1)", new String(site.serve("/chunk-ABCDEFGH.js").body, UTF8));
 
-        String live = "var Z=class{constructor(){" + ShellSite.LIVE_SEARCH_FILTER + ";this.x=1}};";
+        String live = "var Z=class{constructor(){" + ShellSite.LIVE_SEARCH_FILTER + ";this.x=1}};"
+            + "var L=class{constructor(){" + ShellSite.LIVE_LIST_FILTER + ";this.y=2}};";
         String liveServed = new String(ShellSite.patchSearch(live.getBytes(UTF8)), UTF8);
-        assertEquals("the Live TV list search too", "var Z=class{constructor(){" + ShellSite.LIVE_SEARCH_FILTER_OR + ";this.x=1}};", liveServed);
+        assertEquals("the Live TV searches too", "var Z=class{constructor(){" + ShellSite.LIVE_SEARCH_FILTER_OR + ";this.x=1}};"
+            + "var L=class{constructor(){" + ShellSite.LIVE_LIST_FILTER_OR + ";this.y=2}};", liveServed);
         assertTrue("announces itself separately", liveServed.contains("self.__tvShellLiveSearchOr=1"));
+        String halfLive = "var Z=class{constructor(){" + ShellSite.LIVE_SEARCH_FILTER + ";this.x=1}};";
+        assertEquals("Live searches change together or not at all", halfLive,
+            new String(ShellSite.patchSearch(halfLive.getBytes(UTF8)), UTF8));
         String both = bundle + live;
         String bothServed = new String(ShellSite.patchSearch(both.getBytes(UTF8)), UTF8);
         assertTrue("both in one file", bothServed.contains(ShellSite.SEARCH_FILTER_OR) && bothServed.contains(ShellSite.LIVE_SEARCH_FILTER_OR));
