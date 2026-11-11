@@ -54,6 +54,8 @@
     var PLAY_SELECTOR = '.action-buttons .play-btn';
     var playWatch = null;
     var lastFocused = null;
+    var openedBy = {}; // history entry → label of what opened the next page, for Back to land on it
+    var returnTo = null; // after a history Back: { label, until }
     var focusBeforeMedia = null; // what had focus before the picture took it (Back returns there)
     var lastArrowAt = 0;
     var heldArrow = null; // arrow pressed and not released yet: only its keydowns can be queued repeats
@@ -95,6 +97,7 @@
             'video.' + FOCUS_CLASS + '{outline-offset:-3px!important}' +
             'body.tv-shell *{cursor:none!important}' +
             'body.tv-shell ::-webkit-scrollbar{width:0;height:0}' +
+            '.tv-pl-title.tv-pl-on{background:var(--mat-sys-secondary-container,rgba(124,196,255,.3))!important;border-radius:50%}' +
             (fullMotion() ? '' : LITE_MOTION_CSS);
         (document.head || document.documentElement).appendChild(style);
     }
@@ -1321,6 +1324,8 @@
         var pushState = history.pushState;
         history.pushState = function () {
             navDepth += 1;
+            var label = labelOf(lastFocused);
+            if (label) openedBy[entryKey()] = label;
             var result = pushState.apply(this, arguments);
             scheduleRefocus();
             focusPlayWhenShown();
@@ -1328,11 +1333,46 @@
         };
         window.addEventListener('popstate', function () {
             if (navDepth > 0) navDepth -= 1;
-            stopPlayWatch(); // back on the list: the app puts focus back on the card it opened
+            stopPlayWatch();
+            var label = openedBy[entryKey()];
+            returnTo = label ? { label: label, until: Date.now() + 5000 } : null;
             scheduleRefocus();
         });
-        // Any key ends the wait for Play: from then on focus is the user's.
-        document.addEventListener('keydown', stopPlayWatch, true);
+        // Any key ends both waits: from then on focus is the user's.
+        document.addEventListener('keydown', function () {
+            stopPlayWatch();
+            returnTo = null;
+        }, true);
+    }
+
+    /** The history entry (same-URL pages, like a favourite's detail, have their own). */
+    function entryKey() {
+        var nav = window.navigation;
+        return nav && nav.currentEntry ? nav.currentEntry.key : location.href;
+    }
+
+    function labelOf(el) {
+        if (!el || el === document.body || el.nodeType !== 1) return '';
+        return (el.getAttribute('aria-label') || el.textContent || '').trim().slice(0, 200);
+    }
+
+    /** Back landed on a page that does not restore focus itself (favourites, recent...): the
+     *  element that opened the page we left, once it is drawn. Catalogue grids restore their card. */
+    function focusReturnTarget() {
+        var catalog = history.state && history.state.catalogReturnFocus;
+        if (catalog && catalog.url === location.href) {
+            returnTo = null;
+            return false;
+        }
+        var nodes = document.querySelectorAll(CANDIDATE_SELECTOR);
+        for (var i = 0; i < nodes.length; i++) {
+            if (labelOf(nodes[i]) === returnTo.label && qualifies(nodes[i])) {
+                returnTo = null;
+                setFocus(nodes[i], { silent: true });
+                return true;
+            }
+        }
+        return false;
     }
 
     /** A page opened: if it is a detail page, land on Play once it renders (a skeleton
@@ -1362,7 +1402,13 @@
         refocusTimer = setTimeout(function () {
             refocusTimer = null;
             var active = document.activeElement;
-            if (!active || active === document.body || !active.isConnected || !isVisible(active)) {
+            var lost = !active || active === document.body || !active.isConnected || !isVisible(active);
+            if (returnTo && lost) {
+                if (focusReturnTarget()) return;
+                if (returnTo && Date.now() < returnTo.until) return scheduleRefocus();
+                returnTo = null;
+            }
+            if (lost) {
                 var scope = navigationScope();
                 var picture = scope === document.fullscreenElement && scope.querySelector('video');
                 // A tap releases button focus. Recover on the picture so the dock can still hide.
@@ -1472,17 +1518,100 @@
         }
     }
 
+    // ------------------------------------------------- "PL" title filter (top search)
+    // Live TV, Movies and Series open on Polish titles: the section search is prefilled with the
+    // provider's title prefix (measured on its catalogue: live "PL| …", movies/series "PL - …";
+    // the search is one plain substring). The button beside it switches that off and on, and the
+    // choice is remembered for the next sections opened.
+    var PL_TITLE = { live: 'PL|', vod: 'PL -', series: 'PL -' };
+    var PL_TITLE_PREF = 'tvshell.plTitleFilter';
+    var plTitleSection = null; // the section the default was last applied to
+
+    function catalogSection() {
+        var m = /\/xtreams\/[^/]+\/(live|vod|series)(\/|$)/.exec(location.pathname);
+        return m ? m[1] : null;
+    }
+
+    function plTitleWanted() {
+        try {
+            return localStorage.getItem(PL_TITLE_PREF) !== '0';
+        } catch (e) {
+            return true;
+        }
+    }
+
+    function sectionSearch() {
+        return document.querySelector('.workspace-header input[type="search"]');
+    }
+
+    function setSectionSearch(input, text) {
+        input.value = text;
+        input.dispatchEvent(new Event('input', { bubbles: true })); // the header emits it to the app
+    }
+
+    function onPlTitle() {
+        var section = catalogSection(), input = sectionSearch();
+        if (!section || !input) return;
+        var on = input.value.trim() !== PL_TITLE[section];
+        try {
+            localStorage.setItem(PL_TITLE_PREF, on ? '1' : '0');
+        } catch (e) {
+            /* remembered for this session only */
+        }
+        setSectionSearch(input, on ? PL_TITLE[section] : '');
+        syncPlTitle();
+    }
+
+    function syncPlTitle() {
+        var section = catalogSection();
+        var button = document.querySelector('.tv-pl-title');
+        if (!section) {
+            plTitleSection = null;
+            if (button) button.hidden = true;
+            return;
+        }
+        var input = sectionSearch();
+        var actions = document.querySelector('.workspace-header .header-actions--leading');
+        if (!input || !actions || !actions.firstElementChild) return;
+        if (!button) {
+            button = actions.firstElementChild.cloneNode(false); // the header's own icon-button styling
+            button.classList.remove('cdk-focused', 'cdk-keyboard-focused', 'cdk-program-focused', FOCUS_CLASS);
+            button.classList.add('tv-pl-title');
+            button.removeAttribute('disabled');
+            button.removeAttribute('aria-describedby');
+            button.style.fontSize = '13px';
+            button.style.fontWeight = '700';
+            button.textContent = 'PL';
+            button.addEventListener('click', onPlTitle);
+            actions.insertBefore(button, actions.firstChild);
+        }
+        button.hidden = false;
+        if (section !== plTitleSection) {
+            plTitleSection = section;
+            // A section just opened: Polish titles, unless switched off or a search is already set
+            // (the app keeps it in ?q=; the input may still show the previous section's for a moment).
+            if (plTitleWanted() && !new URLSearchParams(location.search).get('q')) setSectionSearch(input, PL_TITLE[section]);
+        }
+        var on = input.value.trim() === PL_TITLE[section];
+        button.classList.toggle('tv-pl-on', on);
+        button.setAttribute('aria-label', 'Polish titles only: ' + (on ? 'on' : 'off'));
+    }
+
     function installPlFilter() {
         var timer = null;
         new MutationObserver(function () {
             if (!timer) timer = setTimeout(function () {
                 timer = null;
                 syncPlFilters();
+                syncPlTitle();
             }, 200);
         }).observe(document.documentElement, { childList: true, subtree: true });
-        // Typing in the search or its clear button changes the state without adding nodes.
+        // Typing in a search or its clear button changes the state without adding nodes.
         document.addEventListener('input', function () {
-            setTimeout(syncPlFilters, 0);
+            setTimeout(function () {
+                syncPlFilters();
+                syncPlTitle();
+            }, 0);
         }, true);
     }
 
