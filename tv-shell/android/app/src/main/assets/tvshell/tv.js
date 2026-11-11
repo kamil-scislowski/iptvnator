@@ -110,6 +110,10 @@
         'body.tv-shell mat-card,body.tv-shell .nav-item,body.tv-shell .portal-rail-link{transition:none!important}' +
         // The LIVE dot's endless pulse restyles the page on every frame while a channel plays.
         'body.tv-shell .player-controls__live-dot{animation:none!important}' +
+        // Player controls idle (syncControlsIdle): faded out like the app's own hidden state.
+        'body.tv-controls-idle .player-controls__bar,body.tv-controls-idle .player-controls__top-scrim,' +
+        'body.tv-controls-idle .player-controls__bottom-scrim,body.tv-controls-idle .player-controls__title,' +
+        'body.tv-controls-idle .player-controls__corner{opacity:0!important;pointer-events:none!important}' +
         // The "select a channel" placeholder bobs its icon forever: 60 compositor frames a second on
         // an idle list, and extra style work on every D-pad step while it shows.
         'body.tv-shell .empty-state-icon{animation:none!important}' +
@@ -603,6 +607,30 @@
         }
     }
 
+    // The app keeps its player controls up while keyboard focus is inside them (pointer users get
+    // a 2.5 s hide); with a remote focus always is, so they never went away. After 2 s without a
+    // key during playback they fade out here; the next arrow or OK only brings them back.
+    var CONTROLS_IDLE_MS = 2000;
+    var lastKeyAt = 0;
+
+    function syncControlsIdle() {
+        var active = document.activeElement;
+        var shell = active && active.closest && active.closest('[class*="player-shell"]');
+        var media = shell && shell.querySelector('video,audio');
+        var idle = !!media && !media.paused && !media.ended && !active.closest('app-player-settings-panel') &&
+            performance.now() - lastKeyAt > CONTROLS_IDLE_MS;
+        document.body.classList.toggle('tv-controls-idle', idle);
+    }
+
+    /** A key press: @return true when it only woke the idle controls. */
+    function wakeControls() {
+        lastKeyAt = performance.now();
+        if (!document.body.classList.contains('tv-controls-idle')) return false;
+        document.body.classList.remove('tv-controls-idle');
+        revealPlayerControls(document.activeElement || document.body);
+        return true;
+    }
+
     /** Tells the shell whether the screen must stay on (something plays in the document). */
     function syncKeepScreenOn(startedPlaying) {
         var playing = startedPlaying === true || anyMediaPlaying();
@@ -644,6 +672,11 @@
         if (event.defaultPrevented && !event.__tvshell) return;
         var dir = DIR[event.key];
         var active = document.activeElement;
+        if (!event.__tvshell && wakeControls() && (dir || event.key === 'Enter')) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            return;
+        }
         if (dir) {
             if (event.ctrlKey || event.altKey || event.metaKey) return;
             // A held key repeats every 50 ms, faster than a step through a long list: the
@@ -802,6 +835,7 @@
 
     /** Back button. Returns true when consumed by the page. */
     api.back = function () {
+        wakeControls(); // Back keeps its meaning (leave fullscreen, ...) with the controls hidden
         var active = document.activeElement;
         // Open overlay (dialog, menu, select panel, bottom sheet, popover): Escape closes it.
         var pane = document.querySelector('.cdk-overlay-pane [role="dialog"],.cdk-overlay-pane [role="menu"],.cdk-overlay-pane [role="listbox"],.cdk-overlay-pane mat-bottom-sheet-container,.cdk-overlay-pane .mat-mdc-autocomplete-panel');
@@ -1641,6 +1675,7 @@
         installFocusMirror();
         installPlFilter();
         document.addEventListener('keydown', onKeyDown, true);
+        setInterval(syncControlsIdle, 500);
         // Keyups arrive in queue order: a keydown after one is a new press, however late it runs.
         document.addEventListener('keyup', function (e) {
             if (DIR[e.key]) heldArrow = null;
