@@ -1531,7 +1531,7 @@
         return (window.__tvShellSearchOr ? PL_TITLE_ANY : PL_TITLE_ONE)[section];
     }
     var PL_TITLE_PREF = 'tvshell.plTitleFilter';
-    var plTitleSection = null; // the section the default was last applied to
+    var plTitlePath = null; // the page the default was last considered for
 
     function catalogSection() {
         var m = /\/xtreams\/[^/]+\/(live|vod|series)(\/|$)/.exec(location.pathname);
@@ -1572,7 +1572,7 @@
         var section = catalogSection();
         var button = document.querySelector('.tv-pl-title');
         if (!section) {
-            plTitleSection = null;
+            plTitlePath = null;
             if (button) button.hidden = true;
             return;
         }
@@ -1592,11 +1592,13 @@
             actions.insertBefore(button, actions.firstChild);
         }
         button.hidden = false;
-        if (section !== plTitleSection) {
-            plTitleSection = section;
-            // A section just opened: Polish titles, unless switched off or a search is already set
-            // (the app keeps it in ?q=; the input may still show the previous section's for a moment).
-            if (plTitleWanted() && !new URLSearchParams(location.search).get('q')) setSectionSearch(input, plTitleTerm(section));
+        if (location.pathname !== plTitlePath) {
+            plTitlePath = location.pathname;
+            // Landed on a section's "All items" (opened, or back from a category, which clears the
+            // search): Polish titles, unless switched off or a search is already set (the app keeps
+            // it in ?q=; the input may still show the previous page's for a moment).
+            var allItems = /\/(live|vod|series)\/?$/.test(location.pathname);
+            if (allItems && plTitleWanted() && !new URLSearchParams(location.search).get('q')) setSectionSearch(input, plTitleTerm(section));
         }
         var on = input.value.trim() === plTitleTerm(section);
         button.classList.toggle('tv-pl-on', on);
