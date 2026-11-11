@@ -49,6 +49,12 @@
     var foreground = true;
     var navDepth = 0;
     var exitArmedUntil = 0;
+    var HOME_PATH = /^\/(workspace\/dashboard\/?)?$/;
+    // The primary action of a detail page (movie, series, episode): app-detail-action-button.
+    var PLAY_SELECTOR = '.action-buttons .play-btn';
+    var playWatch = null;
+    var lastFocused = null;
+    var focusBeforeMedia = null; // what had focus before the picture took it (Back returns there)
     var lastArrowAt = 0;
     var heldArrow = null; // arrow pressed and not released yet: only its keydowns can be queued repeats
     var movePainted = true; // the last D-pad move has reached the screen (a held key waits for it)
@@ -817,21 +823,32 @@
         if (active && (active.tagName === 'VIDEO' || active.tagName === 'AUDIO')) {
             active.blur();
             lastRect = rectOf(active);
+            // Back to what started it (the channel in the list), not the nearest player button.
+            var opener = focusBeforeMedia;
+            focusBeforeMedia = null;
+            if (opener && opener.isConnected && isVisible(opener) && qualifies(opener)) {
+                setFocus(opener);
+                return true;
+            }
             if (focusFirst(null, active)) return true;
         }
-        // The app's own page-level Back lives in the workspace header. Match it by its
-        // stable hooks (component class and the test id upstream relies on), not by the
-        // aria-label, which is translated and overridden on detail pages.
-        var headerBack = document.querySelector('[data-tv-back],.header-back,[data-test-id="workspace-header-back"]');
-        if (headerBack && isVisible(headerBack) && !isDisabled(headerBack)) {
-            headerBack.click();
-            scheduleRefocus();
-            return true;
-        }
-        if (canGoBackInApp()) {
-            history.back(); // popstate decrements the fallback counter
-            scheduleRefocus();
-            return true;
+        // The dashboard is the top: Back there arms the exit instead of replaying every
+        // screen visited (the rail pushes history, so the walk back never ends there).
+        if (!HOME_PATH.test(location.pathname)) {
+            // The app's own page-level Back lives in the workspace header. Match it by its
+            // stable hooks (component class and the test id upstream relies on), not by the
+            // aria-label, which is translated and overridden on detail pages.
+            var headerBack = document.querySelector('[data-tv-back],.header-back,[data-test-id="workspace-header-back"]');
+            if (headerBack && isVisible(headerBack) && !isDisabled(headerBack)) {
+                headerBack.click();
+                scheduleRefocus();
+                return true;
+            }
+            if (canGoBackInApp()) {
+                history.back(); // popstate decrements the fallback counter
+                scheduleRefocus();
+                return true;
+            }
         }
         var now = Date.now();
         if (now < exitArmedUntil) {
@@ -1306,12 +1323,37 @@
             navDepth += 1;
             var result = pushState.apply(this, arguments);
             scheduleRefocus();
+            focusPlayWhenShown();
             return result;
         };
         window.addEventListener('popstate', function () {
             if (navDepth > 0) navDepth -= 1;
+            stopPlayWatch(); // back on the list: the app puts focus back on the card it opened
             scheduleRefocus();
         });
+        // Any key ends the wait for Play: from then on focus is the user's.
+        document.addEventListener('keydown', stopPlayWatch, true);
+    }
+
+    /** A page opened: if it is a detail page, land on Play once it renders (a skeleton
+     *  comes first, and focus would otherwise fall back near the card, often on the rail). */
+    function focusPlayWhenShown() {
+        stopPlayWatch();
+        var tries = 0;
+        // Held until the user presses a key (see installHistoryTracking) or ~15 s pass: the
+        // button is re-rendered once the episode list arrives, which drops focus again.
+        playWatch = setInterval(function () {
+            if (++tries > 60) return stopPlayWatch();
+            var play = document.querySelector(PLAY_SELECTOR);
+            if (play && document.activeElement !== play && isVisible(play) && !isDisabled(play) && navigationScope() === document) {
+                setFocus(play, { silent: true });
+            }
+        }, 250);
+    }
+
+    function stopPlayWatch() {
+        if (playWatch) clearInterval(playWatch);
+        playWatch = null;
     }
 
     var refocusTimer = null;
@@ -1342,6 +1384,11 @@
             for (var i = 0; i < previous.length; i++) if (previous[i] !== t) previous[i].classList.remove(FOCUS_CLASS);
             paintFocus(t);
             lastRect = rectOf(t);
+            if (t.tagName === 'VIDEO' || t.tagName === 'AUDIO') {
+                var player = t.closest('[class*="player-shell"]') || t.parentElement;
+                if (lastFocused && !player.contains(lastFocused)) focusBeforeMedia = lastFocused;
+            }
+            lastFocused = t;
         }, true);
         // When the focused element disappears (virtual scroll recycling, route
         // change), re-establish focus near the previous position.

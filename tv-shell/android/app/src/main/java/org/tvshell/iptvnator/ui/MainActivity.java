@@ -176,6 +176,10 @@ public class MainActivity extends Activity {
         s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         s.setTextZoom(100);
+        // Else every requestFocus (each in-app navigation reports onPageFinished) moves the page's
+        // focus to its first element, the rail's Dashboard link; tv.js places focus itself.
+        // Deprecated in the SDK but still honoured (checked on WebView 157, Android TV 14).
+        s.setNeedInitialFocus(false);
         s.setAllowFileAccess(false);
         s.setAllowContentAccess(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
