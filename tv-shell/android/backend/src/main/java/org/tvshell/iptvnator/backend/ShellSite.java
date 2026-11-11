@@ -142,24 +142,42 @@ public class ShellSite {
         return new Resource(200, mimeFor(relative), data, cache);
     }
 
-    /**
-     * The section search of IPTVnator 0.25.0 (the release this shell's web app comes from), as
-     * minified in its bundle: one substring. {@link #patchSearch} serves it taking alternatives
-     * separated by " OR ", which tv.js uses for its Polish-titles filter ("PL - OR PL 4K").
+    /*
+     * The section searches of IPTVnator 0.25.0 (the release this shell's web app comes from), as
+     * minified in its bundle: one substring each. {@link #patchSearch} serves them taking
+     * alternatives separated by " OR ", which tv.js uses for its Polish-titles filter
+     * ("PL - OR PL 4K"). Each version sets a flag when it runs; tv.js uses OR only once it sees it.
      */
+    /** Movies and Series grids (main bundle); sets window.__tvShellSearchOr. */
     static final String SEARCH_FILTER = "Qe$1=(a,e)=>{let t=ni$1(e.trim());return t?a.filter(r=>{"
         + "let n=(r.title??r.name??``).toString();return ni$1(n).includes(t)}):a}";
-    /** Sets window.__tvShellSearchOr when it runs: tv.js uses OR only once it sees the flag. */
     static final String SEARCH_FILTER_OR = "Qe$1=(self.__tvShellSearchOr=1,(a,e)=>{let t=e.split(` OR `)"
         + ".map(s=>ni$1(s.trim())).filter(Boolean);return t.length?a.filter(r=>{"
         + "let n=ni$1((r.title??r.name??``).toString());return t.some(s=>n.includes(s))}):a})";
+    /** Live TV channel list, whole section or one category (its own chunk); sets window.__tvShellLiveSearchOr. */
+    static final String LIVE_SEARCH_FILTER = "this.displayedChannels=it$1(()=>{let t=ni(this.query().trim()),"
+        + "e=Ao(this.store.selectItemsFromSelectedCategory(),this.sortMode(),n=>n.title??n.name);"
+        + "return t?e.filter(n=>ni(`${n.title??``} ${n.name??``}`).includes(t)):e})";
+    static final String LIVE_SEARCH_FILTER_OR = "this.displayedChannels=(self.__tvShellLiveSearchOr=1,it$1(()=>{"
+        + "let t=this.query().split(` OR `).map(s=>ni(s.trim())).filter(Boolean),"
+        + "e=Ao(this.store.selectItemsFromSelectedCategory(),this.sortMode(),n=>n.title??n.name);"
+        + "return t.length?e.filter(n=>{let m=ni(`${n.title??``} ${n.name??``}`);return t.some(s=>m.includes(s))}):e}))";
+    private static final String[][] SEARCH_PATCHES = {
+        {SEARCH_FILTER, SEARCH_FILTER_OR},
+        {LIVE_SEARCH_FILTER, LIVE_SEARCH_FILTER_OR},
+    };
 
-    /** Exactly one occurrence, or the file is served untouched (another bundle build). */
+    /** Each search found exactly once is replaced; a file with none (or an ambiguous one) is untouched. */
     static byte[] patchSearch(byte[] js) {
         String text = new String(js, UTF8);
-        int at = text.indexOf(SEARCH_FILTER);
-        if (at < 0 || text.indexOf(SEARCH_FILTER, at + 1) >= 0) return js;
-        return (text.substring(0, at) + SEARCH_FILTER_OR + text.substring(at + SEARCH_FILTER.length())).getBytes(UTF8);
+        boolean changed = false;
+        for (String[] patch : SEARCH_PATCHES) {
+            int at = text.indexOf(patch[0]);
+            if (at < 0 || text.indexOf(patch[0], at + 1) >= 0) continue;
+            text = text.substring(0, at) + patch[1] + text.substring(at + patch[0].length());
+            changed = true;
+        }
+        return changed ? text.getBytes(UTF8) : js;
     }
 
     private static Resource text(int status, String message) {

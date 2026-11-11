@@ -1522,13 +1522,20 @@
     // Live TV, Movies and Series open on Polish titles: the section search is prefilled with the
     // provider's title prefixes, measured on its catalogue against the Polish categories (live
     // "PL| …" and "PL-VIP| …", movies "PL - …" and "PL 4K - …", series "PL - …" and "PL- …").
-    // The app's search takes one substring; the shell serves it taking " OR " (ShellSite.patchSearch,
-    // which sets __tvShellSearchOr), else the main prefix alone is used. The button beside the
-    // search switches the filter off and on, and the choice is remembered for the next sections.
+    // The app's searches take one substring; the shell serves them taking " OR " (ShellSite.patchSearch:
+    // Movies/Series set __tvShellSearchOr, the Live TV list __tvShellLiveSearchOr), else the main prefix
+    // alone is used. The button beside the search switches the filter off and on, and the choice is
+    // remembered for the next sections.
     var PL_TITLE_ONE = { live: 'PL|', vod: 'PL -', series: 'PL -' };
     var PL_TITLE_ANY = { live: 'PL| OR PL-VIP', vod: 'PL - OR PL 4K', series: 'PL - OR PL-' };
     function plTitleTerm(section) {
-        return (window.__tvShellSearchOr ? PL_TITLE_ANY : PL_TITLE_ONE)[section];
+        var or = section === 'live' ? window.__tvShellLiveSearchOr : window.__tvShellSearchOr;
+        return (or ? PL_TITLE_ANY : PL_TITLE_ONE)[section];
+    }
+
+    function isPlTitleTerm(section, text) {
+        text = text.trim();
+        return text === PL_TITLE_ANY[section] || text === PL_TITLE_ONE[section];
     }
     var PL_TITLE_PREF = 'tvshell.plTitleFilter';
     var plTitlePath = null; // the page the default was last considered for
@@ -1558,7 +1565,7 @@
     function onPlTitle() {
         var section = catalogSection(), input = sectionSearch();
         if (!section || !input) return;
-        var on = input.value.trim() !== plTitleTerm(section);
+        var on = !isPlTitleTerm(section, input.value);
         try {
             localStorage.setItem(PL_TITLE_PREF, on ? '1' : '0');
         } catch (e) {
@@ -1600,7 +1607,7 @@
             var allItems = /\/(live|vod|series)\/?$/.test(location.pathname);
             if (allItems && plTitleWanted() && !new URLSearchParams(location.search).get('q')) setSectionSearch(input, plTitleTerm(section));
         }
-        var on = input.value.trim() === plTitleTerm(section);
+        var on = isPlTitleTerm(section, input.value);
         button.classList.toggle('tv-pl-on', on);
         button.setAttribute('aria-label', 'Polish titles only: ' + (on ? 'on' : 'off'));
     }
