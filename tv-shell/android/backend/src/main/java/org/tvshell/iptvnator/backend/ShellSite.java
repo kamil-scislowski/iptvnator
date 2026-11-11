@@ -138,7 +138,28 @@ public class ShellSite {
             return new Resource(200, MIME.get("html"), injectTvLayer(new String(index, UTF8), layoutWidth, screenWidth).getBytes(UTF8), "no-store");
         }
         String cache = HASHED_FILE.matcher(path).matches() ? "public, max-age=31536000, immutable" : "no-store";
+        if (relative.endsWith(".js")) data = patchSearch(data);
         return new Resource(200, mimeFor(relative), data, cache);
+    }
+
+    /**
+     * The section search of IPTVnator 0.25.0 (the release this shell's web app comes from), as
+     * minified in its bundle: one substring. {@link #patchSearch} serves it taking alternatives
+     * separated by " OR ", which tv.js uses for its Polish-titles filter ("PL - OR PL 4K").
+     */
+    static final String SEARCH_FILTER = "Qe$1=(a,e)=>{let t=ni$1(e.trim());return t?a.filter(r=>{"
+        + "let n=(r.title??r.name??``).toString();return ni$1(n).includes(t)}):a}";
+    /** Sets window.__tvShellSearchOr when it runs: tv.js uses OR only once it sees the flag. */
+    static final String SEARCH_FILTER_OR = "Qe$1=(self.__tvShellSearchOr=1,(a,e)=>{let t=e.split(` OR `)"
+        + ".map(s=>ni$1(s.trim())).filter(Boolean);return t.length?a.filter(r=>{"
+        + "let n=ni$1((r.title??r.name??``).toString());return t.some(s=>n.includes(s))}):a})";
+
+    /** Exactly one occurrence, or the file is served untouched (another bundle build). */
+    static byte[] patchSearch(byte[] js) {
+        String text = new String(js, UTF8);
+        int at = text.indexOf(SEARCH_FILTER);
+        if (at < 0 || text.indexOf(SEARCH_FILTER, at + 1) >= 0) return js;
+        return (text.substring(0, at) + SEARCH_FILTER_OR + text.substring(at + SEARCH_FILTER.length())).getBytes(UTF8);
     }
 
     private static Resource text(int status, String message) {

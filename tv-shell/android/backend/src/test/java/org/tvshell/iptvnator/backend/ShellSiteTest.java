@@ -86,4 +86,27 @@ public class ShellSiteTest {
         s.setLayoutWidth(960);
         assertTrue("layout width setting", new String(s.serve("/").body, UTF8).contains("width=960"));
     }
+
+    public void testSectionSearchIsServedTakingAlternatives() throws IOException {
+        final Map<String, byte[]> files = new HashMap<String, byte[]>();
+        String bundle = "import{a as ni$1}from\"./chunk-ABCDEFGH.js\";var x=1,Q=2;var " + ShellSite.SEARCH_FILTER + ";var y=3;";
+        files.put("www/main-ABCDEFGH.js", bundle.getBytes(UTF8));
+        files.put("www/main-TWICEAAA.js", (bundle + bundle).getBytes(UTF8));
+        files.put("www/chunk-ABCDEFGH.js", "console.log(1)".getBytes(UTF8));
+        ShellSite site = new ShellSite(new ShellSite.AssetSource() {
+            @Override
+            public byte[] read(String relativePath) {
+                return files.get(relativePath);
+            }
+        }, "/api", 1280);
+
+        String served = new String(site.serve("/main-ABCDEFGH.js").body, UTF8);
+        assertEquals("only the search function changes",
+            "import{a as ni$1}from\"./chunk-ABCDEFGH.js\";var x=1,Q=2;var " + ShellSite.SEARCH_FILTER_OR + ";var y=3;", served);
+        assertTrue("OR between alternatives", served.contains("e.split(` OR `)"));
+        assertTrue("announces itself to tv.js", served.contains("self.__tvShellSearchOr=1"));
+        assertEquals("still cached as immutable", "public, max-age=31536000, immutable", site.serve("/main-ABCDEFGH.js").cacheControl);
+        assertEquals("ambiguous: untouched", bundle + bundle, new String(site.serve("/main-TWICEAAA.js").body, UTF8));
+        assertEquals("other files untouched", "console.log(1)", new String(site.serve("/chunk-ABCDEFGH.js").body, UTF8));
+    }
 }

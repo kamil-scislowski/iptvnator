@@ -12,6 +12,7 @@ import org.tvshell.iptvnator.backend.WebBackend;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
@@ -52,6 +53,7 @@ public final class TvShellServer extends NanoHTTPD {
             }
         }, "/api", prefs.layoutWidth());
         this.backend = new WebBackend(new AndroidHttpFetcher(), "/api");
+        backend.setCatalogCacheDir(new File(context.getCacheDir(), "xtream-catalog"));
         setAsyncRunner(new DefaultAsyncRunner() {
             @Override
             public void exec(ClientHandler handler) {

@@ -3,6 +3,11 @@ package org.tvshell.iptvnator.backend;
 import static org.tvshell.iptvnator.backend.TestMain.assertEquals;
 import static org.tvshell.iptvnator.backend.TestMain.assertTrue;
 
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -283,5 +288,120 @@ public class WebBackendTest {
         WebBackend.Response noMac = backend.handle("GET", "/stalker", query("targetId", id, "type", "stb", "action", "handshake"), null);
         assertTrue("no cookie without mac", !fetcher.headers.get(2).containsKey("Cookie"));
         assertEquals("ok", 200, Integer.valueOf(noMac.status));
+    }
+
+    // ------------------------------------------------------------ catalogue cache
+    static final String XC = "http://xc.example:8080/player_api.php?username=u&password=p&action=";
+
+    static File tempDir() {
+        try {
+            File dir = File.createTempFile("catalog", "");
+            dir.delete();
+            dir.mkdirs();
+            return dir;
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    static WebBackend.Response xtream(WebBackend backend, String id, String action) {
+        return backend.handle("GET", "/xtream", query("targetId", id, "username", "u", "password", "p", "action", action), null);
+    }
+
+    static int downloads(FakeFetcher fetcher, String action) {
+        int n = 0;
+        for (String url : fetcher.urls) if (url.endsWith("action=" + action)) n++;
+        return n;
+    }
+
+    static InputStream utf8(String text) {
+        return new ByteArrayInputStream(text.getBytes(Charset.forName("UTF-8")));
+    }
+
+    static void drain(InputStream in) {
+        try {
+            byte[] buffer = new byte[3]; // small reads: structure split across reads
+            while (in.read(buffer) != -1) { /* read through */ }
+            in.close();
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    public void testXtreamCataloguesAreKeptForADay() {
+        FakeFetcher fetcher = new FakeFetcher();
+        fetcher.answers.put(XC + "get_live_streams", "[{\"stream_id\":1,\"name\":\"Synthetic One\"}]");
+        fetcher.answers.put(XC + "get_vod_streams", "{\"user_info\":{\"auth\":0}}");
+        fetcher.answers.put(XC + "get_series", " [ ] ");
+        fetcher.answers.put(XC + "get_account_info", "[{\"synthetic\":1}]");
+        WebBackend backend = new WebBackend(fetcher, "/api");
+        File dir = tempDir();
+        backend.setCatalogCacheDir(dir);
+        String id = register(backend, "http://xc.example:8080/get.php?username=u&password=p");
+
+        String fresh = xtream(backend, id, "get_live_streams").bodyText();
+        WebBackend.Response again = xtream(backend, id, "get_live_streams");
+        assertEquals("downloaded once", 1, Integer.valueOf(downloads(fetcher, "get_live_streams")));
+        assertEquals("the same answer, from disk", fresh, again.bodyText());
+        assertEquals("from disk it streams", -1L, Long.valueOf(again.bodyLength()));
+        for (File file : dir.listFiles()) {
+            assertTrue("named by a hash of the request, never the login: " + file.getName(), file.getName().matches("xtream-[0-9a-f]{64}\\.json"));
+        }
+
+        backend.catalogCache.ttlMs = 0;
+        xtream(backend, id, "get_live_streams");
+        assertEquals("expired: downloaded again", 2, Integer.valueOf(downloads(fetcher, "get_live_streams")));
+        backend.catalogCache.ttlMs = 24L * 60 * 60 * 1000;
+
+        for (String action : new String[] {"get_vod_streams", "get_series", "get_account_info"}) {
+            xtream(backend, id, action);
+            xtream(backend, id, action);
+            assertEquals("not kept (error answer, empty list, not a catalogue): " + action, 2, Integer.valueOf(downloads(fetcher, action)));
+        }
+        fetcher.failure = new ProviderException(503, "Service Unavailable");
+        xtream(backend, id, "get_vod_categories");
+        fetcher.failure = null;
+        fetcher.answers.put(XC + "get_vod_categories", "[{\"category_id\":\"1\",\"category_name\":\"Synthetic\"}]");
+        assertTrue("a failure is not kept", ((String) xtream(backend, id, "get_vod_categories").bodyText()).contains("Synthetic"));
+    }
+
+    public void testStreamedCatalogueIsKeptOnlyWhole() {
+        final String movies = "[{\"stream_id\":1,\"name\":\"Synthetic \\\"]\\\" Movie é\",\"backdrop_path\":[\"x\"]}]";
+        final int[] calls = {0};
+        HttpFetcher fetcher = new HttpFetcher() {
+            @Override
+            public Result getLargeJson(String url, Map<String, String> requestHeaders, int timeoutMs) {
+                calls[0]++;
+                return new Result(200, null, "application/json", utf8(movies));
+            }
+        };
+        WebBackend backend = new WebBackend(fetcher, "/api");
+        backend.setCatalogCacheDir(tempDir());
+        String id = register(backend, "http://xc.example:8080/get.php?username=u&password=p");
+        String first = xtream(backend, id, "get_vod_streams").bodyText();
+        String second = xtream(backend, id, "get_vod_streams").bodyText();
+        assertEquals("streamed once, then from disk", 1, Integer.valueOf(calls[0]));
+        assertEquals("same bytes", first, second);
+        assertTrue("payload intact", second.contains("Synthetic \\\"]\\\" Movie é"));
+
+        File dir = tempDir();
+        CatalogCache cache = new CatalogCache(dir);
+        drain(cache.tee("http://a/whole", utf8("[{\"a\":[1,2]}, {\"b\":\"]}\"}]")));
+        assertTrue("a whole array is kept", cache.open("http://a/whole") != null);
+        drain(cache.tee("http://a/cut-after-inner-bracket", utf8("[{\"a\":[1,2]")));
+        assertTrue("cut right after a nested ] is not kept", cache.open("http://a/cut-after-inner-bracket") == null);
+        drain(cache.tee("http://a/empty", utf8("[ ]")));
+        assertTrue("an empty list is not kept", cache.open("http://a/empty") == null);
+        drain(cache.tee("http://a/two", utf8("[1] [2]")));
+        assertTrue("trailing content is not kept", cache.open("http://a/two") == null);
+        InputStream aborted = cache.tee("http://a/aborted", utf8("[{\"a\":1},{\"b\":2}]"));
+        try {
+            aborted.read(new byte[5]);
+            aborted.close();
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
+        assertTrue("closed before the end is not kept", cache.open("http://a/aborted") == null);
+        for (File file : dir.listFiles()) assertTrue("no partial file left: " + file.getName(), !file.getName().endsWith(".part"));
     }
 }

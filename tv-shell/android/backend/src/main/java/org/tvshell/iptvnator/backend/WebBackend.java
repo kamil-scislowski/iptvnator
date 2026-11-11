@@ -1,6 +1,7 @@
 package org.tvshell.iptvnator.backend;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.SequenceInputStream;
@@ -96,12 +97,18 @@ public class WebBackend {
     }
 
     private final HttpFetcher fetcher;
+    volatile CatalogCache catalogCache;
     private final String runtimeBackendUrl;
     private final Map<String, String> providerTargets = new ConcurrentHashMap<String, String>();
 
     public WebBackend(HttpFetcher fetcher, String runtimeBackendUrl) {
         this.fetcher = fetcher;
         this.runtimeBackendUrl = runtimeBackendUrl;
+    }
+
+    /** Keeps Xtream catalogues in {@code dir} for a day (see {@link CatalogCache}); null turns it off. */
+    public void setCatalogCacheDir(File dir) {
+        catalogCache = dir == null ? null : new CatalogCache(dir);
     }
 
     // ---------------------------------------------------------------- entry
@@ -229,13 +236,18 @@ public class WebBackend {
             String userAgent = query.get("userAgent");
             if (userAgent != null) headers.put("User-Agent", userAgent);
             String requestUrl = PortalUrls.withQuery(PortalUrls.xtreamApiUrl(base), params);
+            CatalogCache cache = connectionTest || !CatalogCache.cacheable(action) ? null : catalogCache;
+            InputStream cached = cache == null ? null : cache.open(requestUrl);
+            if (cached != null) return streamedPayload(action, cached);
             HttpFetcher.Result result = connectionTest
                 ? fetcher.testConnection(requestUrl, headers, TIMEOUT_XTREAM_MS)
                 : fetcher.getLargeJson(requestUrl, headers, TIMEOUT_XTREAM_MS);
-            if (result.stream != null) return streamedPayload(action, result.stream);
+            if (result.stream != null) return streamedPayload(action, cache == null ? result.stream : cache.tee(requestUrl, result.stream));
+            Object payload = payloadOf(result.body);
+            if (cache != null && payload instanceof Json.Raw) cache.save(requestUrl, payload.toString());
             Map<String, Object> out = Json.object();
             out.put("action", action);
-            out.put("payload", payloadOf(result.body));
+            out.put("payload", payload);
             return json(200, out);
         } catch (ProviderException e) {
             if (connectionTest) {

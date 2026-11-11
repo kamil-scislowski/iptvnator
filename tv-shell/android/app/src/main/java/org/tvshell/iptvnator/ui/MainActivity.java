@@ -185,6 +185,13 @@ public class MainActivity extends Activity {
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setJavaScriptCanOpenWindowsAutomatically(false);
         s.setUserAgentString(s.getUserAgentString() + " IPTVnator/" + versionName());
+        // Hashed assets are cached as immutable, but an update may serve one differently under the
+        // same name (ShellSite.patchSearch): drop the previous install's copies once.
+        long installed = installTime();
+        if (prefs.cachedInstall() != installed) {
+            webView.clearCache(true);
+            prefs.setCachedInstall(installed);
+        }
         webView.setBackgroundColor(Color.BLACK);
         webView.setFocusable(true);
         webView.setFocusableInTouchMode(true);
@@ -332,6 +339,14 @@ public class MainActivity extends Activity {
 
     private boolean isDebugBuild() {
         return (getApplicationInfo().flags & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+    }
+
+    private long installTime() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).lastUpdateTime;
+        } catch (RuntimeException | android.content.pm.PackageManager.NameNotFoundException e) {
+            return 0;
+        }
     }
 
     private String versionName() {

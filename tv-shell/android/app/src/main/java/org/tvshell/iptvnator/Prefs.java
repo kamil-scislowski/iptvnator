@@ -12,6 +12,7 @@ public class Prefs {
     public static final String KEY_EXTERNAL_PLAYER = "externalPlayerPackage";
     public static final String KEY_SERVER_PORT = "serverPort";
     public static final String KEY_DEBUG = "webDebug";
+    public static final String KEY_CACHED_INSTALL = "httpCacheInstall";
 
     public static final int DEFAULT_LAYOUT_WIDTH = 1280;
 
@@ -69,5 +70,14 @@ public class Prefs {
 
     public void setWebDebug(boolean value) {
         prefs.edit().putBoolean(KEY_DEBUG, value).apply();
+    }
+
+    /** The install (package update time) the WebView's HTTP cache was filled under. */
+    public long cachedInstall() {
+        return prefs.getLong(KEY_CACHED_INSTALL, 0);
+    }
+
+    public void setCachedInstall(long updateTime) {
+        prefs.edit().putLong(KEY_CACHED_INSTALL, updateTime).apply();
     }
 }

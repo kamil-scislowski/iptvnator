@@ -1520,10 +1520,16 @@
 
     // ------------------------------------------------- "PL" title filter (top search)
     // Live TV, Movies and Series open on Polish titles: the section search is prefilled with the
-    // provider's title prefix (measured on its catalogue: live "PL| …", movies/series "PL - …";
-    // the search is one plain substring). The button beside it switches that off and on, and the
-    // choice is remembered for the next sections opened.
-    var PL_TITLE = { live: 'PL|', vod: 'PL -', series: 'PL -' };
+    // provider's title prefixes, measured on its catalogue against the Polish categories (live
+    // "PL| …" and "PL-VIP| …", movies "PL - …" and "PL 4K - …", series "PL - …" and "PL- …").
+    // The app's search takes one substring; the shell serves it taking " OR " (ShellSite.patchSearch,
+    // which sets __tvShellSearchOr), else the main prefix alone is used. The button beside the
+    // search switches the filter off and on, and the choice is remembered for the next sections.
+    var PL_TITLE_ONE = { live: 'PL|', vod: 'PL -', series: 'PL -' };
+    var PL_TITLE_ANY = { live: 'PL| OR PL-VIP', vod: 'PL - OR PL 4K', series: 'PL - OR PL-' };
+    function plTitleTerm(section) {
+        return (window.__tvShellSearchOr ? PL_TITLE_ANY : PL_TITLE_ONE)[section];
+    }
     var PL_TITLE_PREF = 'tvshell.plTitleFilter';
     var plTitleSection = null; // the section the default was last applied to
 
@@ -1552,13 +1558,13 @@
     function onPlTitle() {
         var section = catalogSection(), input = sectionSearch();
         if (!section || !input) return;
-        var on = input.value.trim() !== PL_TITLE[section];
+        var on = input.value.trim() !== plTitleTerm(section);
         try {
             localStorage.setItem(PL_TITLE_PREF, on ? '1' : '0');
         } catch (e) {
             /* remembered for this session only */
         }
-        setSectionSearch(input, on ? PL_TITLE[section] : '');
+        setSectionSearch(input, on ? plTitleTerm(section) : '');
         syncPlTitle();
     }
 
@@ -1590,9 +1596,9 @@
             plTitleSection = section;
             // A section just opened: Polish titles, unless switched off or a search is already set
             // (the app keeps it in ?q=; the input may still show the previous section's for a moment).
-            if (plTitleWanted() && !new URLSearchParams(location.search).get('q')) setSectionSearch(input, PL_TITLE[section]);
+            if (plTitleWanted() && !new URLSearchParams(location.search).get('q')) setSectionSearch(input, plTitleTerm(section));
         }
-        var on = input.value.trim() === PL_TITLE[section];
+        var on = input.value.trim() === plTitleTerm(section);
         button.classList.toggle('tv-pl-on', on);
         button.setAttribute('aria-label', 'Polish titles only: ' + (on ? 'on' : 'off'));
     }
