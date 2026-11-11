@@ -1399,6 +1399,93 @@
         observer.observe(document.documentElement, { childList: true, subtree: true });
     }
 
+    // ------------------------------------------------- quick "PL|" category filter
+    // A button beside the category search (Live TV, Movies, Series): fills the search with the
+    // provider's prefix for Polish categories; pressed again it closes the search, which clears it.
+    var PL_FILTER = 'PL|';
+
+    function categorySearchToggle(actions) {
+        var buttons = actions.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {
+            if (!buttons[i].classList.contains('tv-pl-filter') && buttons[i].textContent.trim() === 'search') return buttons[i];
+        }
+        return null;
+    }
+
+    function categorySearchInput(actions) {
+        var column = actions.closest('.context-column');
+        return column && column.querySelector('.context-search input');
+    }
+
+    function onPlFilter(event) {
+        var button = event.currentTarget;
+        var actions = button.parentNode;
+        var toggle = categorySearchToggle(actions);
+        var input = categorySearchInput(actions);
+        if (!toggle || toggle.disabled) return;
+        if (input && input.value === PL_FILTER) {
+            toggle.click(); // closing the search clears its term
+        } else {
+            if (!input) toggle.click();
+            var tries = 0;
+            (function fill() {
+                var field = categorySearchInput(actions);
+                if (!field) {
+                    if (++tries < 20) setTimeout(fill, 50);
+                    return;
+                }
+                field.value = PL_FILTER;
+                field.dispatchEvent(new Event('input', { bubbles: true })); // the app filters on (input)
+                if (document.activeElement !== button) setFocus(button, { silent: true });
+                syncPlFilters();
+            })();
+        }
+        setTimeout(syncPlFilters, 100);
+    }
+
+    function syncPlFilters() {
+        var all = document.querySelectorAll('.context-header__actions');
+        for (var i = 0; i < all.length; i++) {
+            var actions = all[i];
+            var toggle = categorySearchToggle(actions);
+            if (!toggle) continue;
+            var button = actions.querySelector('.tv-pl-filter');
+            if (!button) {
+                button = toggle.cloneNode(false); // the app's classes and scoped-style attributes
+                button.classList.remove('context-header__action--active', 'cdk-focused', 'cdk-keyboard-focused', 'cdk-program-focused', FOCUS_CLASS);
+                button.classList.add('tv-pl-filter');
+                button.removeAttribute('aria-describedby');
+                button.setAttribute('aria-label', 'Filter categories: ' + PL_FILTER);
+                button.style.fontSize = '13px';
+                button.style.fontWeight = '700';
+                button.textContent = 'PL';
+                button.addEventListener('click', onPlFilter);
+                // After the toggle's own anchor comment, so Angular re-rendering it keeps the order.
+                var after = toggle.nextSibling && toggle.nextSibling.nodeType === 8 ? toggle.nextSibling : toggle;
+                actions.insertBefore(button, after.nextSibling);
+            }
+            var input = categorySearchInput(actions);
+            button.classList.toggle('context-header__action--active', !!input && input.value === PL_FILTER);
+            // Usable exactly when the search is (it is disabled while the categories load).
+            button.disabled = toggle.disabled;
+            button.classList.toggle('mat-mdc-button-disabled', toggle.disabled);
+        }
+    }
+
+    function installPlFilter() {
+        var timer = null;
+        new MutationObserver(function () {
+            if (!timer) timer = setTimeout(function () {
+                timer = null;
+                syncPlFilters();
+            }, 200);
+        }).observe(document.documentElement, { childList: true, subtree: true });
+        // Typing in the search or its clear button changes the state without adding nodes.
+        document.addEventListener('input', function () {
+            setTimeout(syncPlFilters, 0);
+        }, true);
+    }
+
     // ------------------------------------------------------------- init
     function init() {
         document.documentElement.classList.add('tv-shell');
@@ -1408,6 +1495,7 @@
         installClipboardHook();
         installHistoryTracking();
         installFocusMirror();
+        installPlFilter();
         document.addEventListener('keydown', onKeyDown, true);
         // Keyups arrive in queue order: a keydown after one is a new press, however late it runs.
         document.addEventListener('keyup', function (e) {
