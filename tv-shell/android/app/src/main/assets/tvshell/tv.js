@@ -617,7 +617,9 @@
         var active = document.activeElement;
         var shell = active && active.closest && active.closest('[class*="player-shell"]');
         var media = shell && shell.querySelector('video,audio');
-        var idle = !!media && !media.paused && !media.ended && !active.closest('app-player-settings-panel') &&
+        // Focus on the picture itself: the app hides the controls on its own, and OK there means fullscreen.
+        var idle = !!media && !media.paused && !media.ended && !/^(VIDEO|AUDIO)$/.test(active.tagName) &&
+            !active.closest('app-player-settings-panel') &&
             performance.now() - lastKeyAt > CONTROLS_IDLE_MS;
         document.body.classList.toggle('tv-controls-idle', idle);
     }
