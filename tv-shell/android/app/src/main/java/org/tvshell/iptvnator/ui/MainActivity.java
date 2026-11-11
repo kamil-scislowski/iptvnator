@@ -312,6 +312,9 @@ public class MainActivity extends Activity {
                 root.addView(view, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
                 webView.setVisibility(View.GONE);
                 view.setFocusable(true);
+                // The page's content view inside the fullscreen container must take the focus: when the
+                // container keeps it, remote keys never reach the page (only Back, forwarded by handleBack).
+                if (view instanceof ViewGroup) ((ViewGroup) view).setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
                 view.requestFocus();
             }
 
